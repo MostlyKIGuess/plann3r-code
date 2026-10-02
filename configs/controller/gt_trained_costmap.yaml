@@ -1,0 +1,30 @@
+# Controller for the "Plann3r + GT-trained Control" row. The same GNM policy
+# as predicted_costmap.yaml, trained on simulator NavMesh geodesic costmaps
+# instead of Plann3r costmaps. At inference it receives Plann3r-predicted
+# costmaps like every other row. Keys are explained in predicted_costmap.yaml.
+load_run: $PLANN3R_ROOT/models/controller/gt_trained  # folder holding latest.pth
+
+goal_type: navmesh_costmap
+costmap_size: [16, 16]
+costmap_channels: 1
+costmap_normalization: per_map_minmax
+goal_use_pl: 0
+goal_uses_context: false
+goal_uses_stacked_context: false
+dims_segFt: 1
+use_mask_grad: false
+
+obs_type: image
+model_type: gnm
+obs_encoding_size: 1024
+goal_encoding_size: 1024
+context_size: 5
+image_size: [85, 64]
+
+len_traj_pred: 5
+learn_angle: true
+waypoint_index: -1
+# The velocity filter (rolling mean over 5 commands) is on for this row, as in
+# the configuration used for the paper row.
+use_vel_filter: true
+vel_filter_window: 5

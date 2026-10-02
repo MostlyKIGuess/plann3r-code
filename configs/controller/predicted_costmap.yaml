@@ -1,0 +1,31 @@
+# Controller for every reported row except "GT-trained Control". A GNM policy
+# trained on Plann3r-predicted costmaps. It maps the RGB history and the Plann3r
+# query costmap to future waypoints (libs/control/learnt_controller.py).
+load_run: $PLANN3R_ROOT/models/controller/predicted_costmap  # folder holding latest.pth
+
+# Goal input. `navmesh_costmap` is the loader's name for a dense costmap goal,
+# whatever produced the costmap. This checkpoint was trained on Plann3r costmaps.
+goal_type: navmesh_costmap
+costmap_size: [16, 16]                  # the costmap is area-resized to this grid
+costmap_channels: 1                     # input channels of the goal encoder
+costmap_normalization: per_map_minmax   # each costmap is scaled to [0, 1] on its own
+goal_use_pl: 0                          # GNM option for object path lengths, off for costmaps
+goal_uses_context: false                # goal encoder sees only the costmap, not past frames
+goal_uses_stacked_context: false
+dims_segFt: 1                           # goal feature width the GNM was built with
+use_mask_grad: false                    # no mask-gradient input channel
+
+# Observation encoder.
+obs_type: image
+model_type: gnm
+obs_encoding_size: 1024
+goal_encoding_size: 1024
+context_size: 5                         # past RGB frames used with the current one
+image_size: [85, 64]                    # RGB frames are resized to this before the encoder
+
+# Output and execution.
+len_traj_pred: 5                        # number of predicted waypoints
+learn_angle: true                       # each waypoint also has a heading
+waypoint_index: -1                      # waypoint turned into the velocity command (-1 is the last)
+use_vel_filter: false                   # rolling mean over recent velocity commands
+vel_filter_window: 1

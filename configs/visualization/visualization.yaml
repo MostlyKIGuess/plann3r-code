@@ -1,0 +1,39 @@
+# Off for every reported run. When enabled: one compact frame per navigation
+# step and one MP4 per episode.
+vggt_nav_compact:
+  enabled: false
+  width: 1280
+  height: 720
+  video_fps: 5
+  topdown_meters_per_pixel: 0.05
+  save_frames: true
+
+# Raw arrays are only for an explicitly requested diagnostic run. Inferred
+# stopping needs enabled: true (evaluate.sh sets it), because the stopper reads
+# the per-step localization data this collects.
+save_raw_data:
+  enabled: false
+  rgb: false
+  depth: false
+  pts3d: false
+  costmaps: true
+  # evaluate.sh turns this on for inferred stopping, so the saved costmaps are
+  # the unnormalized values the stopper thresholds.
+  unnormalized_costmaps: false
+  matches: false
+  waypoints: true
+  control_outputs: true
+  agent_state: true
+  collision: true
+  distance_to_goal: true
+
+render_visualizations:
+  enabled: false
+  online: false
+  rgb_images: false
+  costmap_heatmaps: false
+  match_vis: false
+  topdown_trajectory: false
+  topdown_meters_per_pixel: 0.05
+  combined_step_vis: false
+  combined_dpi: 80

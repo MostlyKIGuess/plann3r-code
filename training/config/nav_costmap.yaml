@@ -1,0 +1,242 @@
+defaults:
+  - default_dataset.yaml
+
+exp_name: nav_costmap_exp001
+img_size: 518
+num_workers: 8
+seed_value: 42
+vggtnav_val_ratio: 0.14
+accum_steps: 1
+patch_size: 14
+val_epoch_freq: 1
+max_img_per_gpu: 54
+train_submap_images: 8
+val_submap_images: 8
+
+limit_val_batches: 200
+
+
+data:
+  train:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    shuffle: True
+    pin_memory: False
+    common_config:
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: False
+      track_num: 1024
+      training: True
+      inside_random: False
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      rescale: False
+      rescale_aug: False
+      landscape_check: False
+      debug: False
+      get_nearby: False
+      load_depth: False
+      img_nums: [8, 21]
+      fixed_submap_images: ${train_submap_images}
+      max_img_per_gpu: ${max_img_per_gpu}
+      allow_duplicate_img: False
+      repeat_batch: False
+      augs:
+        cojitter: True
+        cojitter_ratio: 0.3
+        scales: null
+        aspects: [1.0, 1.0]
+        color_jitter:
+          brightness: 0.2
+          contrast: 0.2
+          saturation: 0.2
+          hue: 0.05
+          p: 0.8
+        gray_scale: False
+        gau_blur: False
+    dataset:
+      _target_: data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: data.datasets.vggtnav.VGGTNavDataset
+          split: train
+          VGGTNAV_DIR: /YOUR/PATH/TO/data/vggtnav
+          val_ratio: ${vggtnav_val_ratio}
+          load_query_pointmap: True
+          ensure_goal_frame_in_context: True
+
+  val:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    shuffle: True
+    pin_memory: False
+    common_config:
+      fix_img_num: -1
+      fix_aspect_ratio: 1.0
+      load_track: False
+      track_num: 1024
+      training: False
+      inside_random: False
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      rescale: False
+      rescale_aug: False
+      landscape_check: False
+      debug: False
+      get_nearby: False
+      load_depth: False
+      img_nums: [8, 21]
+      fixed_submap_images: ${val_submap_images}
+      max_img_per_gpu: ${max_img_per_gpu}
+      allow_duplicate_img: False
+      repeat_batch: False
+      augs:
+        cojitter: False
+        cojitter_ratio: 0.5
+        scales: null
+        aspects: [1.0, 1.0]
+        color_jitter: null
+        gray_scale: False
+        gau_blur: False
+    dataset:
+      _target_: data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: data.datasets.vggtnav.VGGTNavDataset
+          split: val
+          VGGTNAV_DIR: /YOUR/PATH/TO/data/vggtnav
+          val_ratio: ${vggtnav_val_ratio}
+          load_query_pointmap: True
+          ensure_goal_frame_in_context: True
+
+
+logging:
+  log_dir: logs
+  log_visuals: False
+  log_freq: 1
+  log_level_primary: DEBUG
+  log_level_secondary: WARNING
+  all_ranks: False
+  tensorboard_writer:
+    _target_: train_utils.tb_writer.TensorBoardLogger
+    path: ${logging.log_dir}/tensorboard
+  scalar_keys_to_log:
+    train:
+      keys_to_log:
+        - loss_objective
+        - loss_costmap
+        - loss_data_costmap
+        - loss_reg_costmap
+        - loss_grad_costmap
+        - loss_aux_pointmap
+    val:
+      keys_to_log:
+        - loss_objective
+        - loss_costmap
+        - loss_data_costmap
+        - loss_reg_costmap
+        - loss_grad_costmap
+        - loss_aux_pointmap
+
+
+checkpoint:
+  save_dir: logs/${exp_name}/ckpts
+  save_freq: 15
+  resume_checkpoint_path: /YOUR/PATH/TO/CKPT
+  strict: False
+
+
+loss:
+  _target_: loss.MultitaskLoss
+  camera: null
+  depth: null
+  point: null
+  track: null
+  costmap:
+    weight: 1.0
+    loss_type: "huber"
+    huber_delta: 1.0
+    lambda_data: 1.0
+    lambda_grad: 0.5
+    lambda_aux: 0.02
+    max_aux_to_cost_ratio: 0.2
+    gradient_scales: [1, 2, 4]
+    log_scale: True
+    normalize_gt_costmap: False
+    valid_range: -1
+
+
+optim:
+  param_group_modifiers: False
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-5
+    weight_decay: 0.05
+
+  frozen_module_names:
+      - "aggregator.patch_embed*"
+      - "aggregator.frame_blocks*"
+      - "aggregator.camera_token"
+      - "aggregator.register_token"
+      - "point_head*"
+
+  amp:
+    enabled: True
+    amp_dtype: bfloat16
+
+  gradient_clip:
+    _target_: train_utils.gradient_clip.GradientClipper
+    configs:
+      - module_name: [""]
+        max_norm: 1.0
+        norm_type: 2
+
+  options:
+    lr:
+      - scheduler:
+          _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+          schedulers:
+            - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+              start_value: 1e-8
+              end_value: 5e-5
+            - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+              start_value: 5e-5
+              end_value: 1e-8
+          lengths: [0.05, 0.95]
+          interval_scaling: ['rescaled', 'rescaled']
+    weight_decay:
+      - scheduler:
+          _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+          value: 0.05
+
+
+max_epochs: 100
+
+model:
+  _target_: vggt.models.vggt_nav.VGGTNav
+  img_size: ${img_size}
+  patch_size: ${patch_size}
+  init_costmap_from_depth: False
+  # Output activation of the costmap head. gelu matches the released checkpoint
+  # and every inference config.
+  costmap_activation: gelu
+  costmap_head_type: mlp
+  enable_point_aux: True
+  train_point_head: False
+
+
+distributed:
+  backend: nccl
+  comms_dtype: None
+  find_unused_parameters: False
+  timeout_mins: 30
+  gradient_as_bucket_view: True
+  bucket_cap_mb: 25
+  broadcast_buffers: True
+
+cuda:
+    cudnn_deterministic: False
+    cudnn_benchmark: False
+    allow_tf32: True

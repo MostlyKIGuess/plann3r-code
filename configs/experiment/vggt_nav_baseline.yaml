@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - default
+  - _self_
+
+vggtnav:
+  enabled: true
+  checkpoint_path: ${oc.env:PLANN3R_ROOT}/models/planner/checkpoint_best.pt
+  costmap_head_type: mlp
+  anchor_source: topomap
+  topomap_anchor_mode: min_median_costmap
+  query_gt_anchor:
+    enabled: false
+    match_distance: 0.35

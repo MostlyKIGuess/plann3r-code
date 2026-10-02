@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+MODE="joystick"
+if [[ "$#" -gt 0 && "${1:0:2}" != "--" ]]; then
+  MODE="$1"
+  shift
+fi
+
+case "$MODE" in
+  joystick)
+    exec python3 "$SCRIPT_DIR/teleop_joystick.py" "$@"
+    ;;
+  keyboard)
+    exec python3 "$SCRIPT_DIR/teleop_keyboard.py" "$@"
+    ;;
+  both)
+    exec python3 "$SCRIPT_DIR/teleop_joystick.py" --keyboard "$@"
+    ;;
+  *)
+    echo "Usage: $0 [joystick|keyboard|both] [teleop args...]" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,1 @@
+"""Collision avoidance helpers."""

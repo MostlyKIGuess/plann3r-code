@@ -1,0 +1,604 @@
+import numpy as np
+import os
+import pickle
+import yaml
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Tuple
+import tqdm
+import io
+import lmdb
+
+import torch
+from torch.utils.data import Dataset
+import torchvision.transforms.functional as TF
+import torch.nn.functional as F
+
+from vint_train.data.data_utils import (
+    img_path_to_data,
+    calculate_sin_cos,
+    get_data_path,
+    to_local_coords,
+)
+
+class ViNT_Dataset(Dataset):
+    def __init__(
+        self,
+        data_folder: str,
+        data_split_folder: str,
+        dataset_name: str,
+        image_size: Tuple[int, int],
+        waypoint_spacing: int,
+        min_dist_cat: int,
+        max_dist_cat: int,
+        min_action_distance: int,
+        max_action_distance: int,
+        negative_mining: bool,
+        len_traj_pred: int,
+        learn_angle: bool,
+        context_size: int,
+        context_type: str = "temporal",
+        end_slack: int = 0,
+        goals_per_obs: int = 1,
+        normalize: bool = True,
+        obs_type: str = "image",
+        goal_type: str = "image",
+        **kwargs,
+    ):
+        """
+        Main ViNT dataset class
+
+        Args:
+            data_folder (string): Directory with all the image data
+            data_split_folder (string): Directory with filepaths.txt, a list of all trajectory names in the dataset split that are each seperated by a newline
+            dataset_name (string): Name of the dataset [recon, go_stanford, scand, tartandrive, etc.]
+            waypoint_spacing (int): Spacing between waypoints
+            min_dist_cat (int): Minimum distance category to use
+            max_dist_cat (int): Maximum distance category to use
+            negative_mining (bool): Whether to use negative mining from the ViNG paper (Shah et al.) (https://arxiv.org/abs/2012.09812)
+            len_traj_pred (int): Length of trajectory of waypoints to predict if this is an action dataset
+            learn_angle (bool): Whether to learn the yaw of the robot at each predicted waypoint if this is an action dataset
+            context_size (int): Number of previous observations to use as context
+            context_type (str): Whether to use temporal, randomized, or randomized temporal context
+            end_slack (int): Number of timesteps to ignore at the end of the trajectory
+            goals_per_obs (int): Number of goals to sample per observation
+            normalize (bool): Whether to normalize the distances or actions
+            goal_type (str): What data type to use for the goal. The only one supported is "image" for now.
+        """
+        self.data_folder = data_folder
+        self.data_split_folder = data_split_folder
+        self.dataset_name = dataset_name
+        self.kwargs = kwargs
+        
+        traj_names_file = os.path.join(data_split_folder, "traj_names.txt")
+        with open(traj_names_file, "r") as f:
+            file_lines = f.read()
+            self.traj_names = file_lines.split("\n")
+        # check if traj exists, remove otherwise
+        trajs_to_remove = [traj_name for traj_name in self.traj_names if not os.path.exists(os.path.join(data_folder, traj_name, "traj_data.pkl"))]
+        print(f"Removing {len(trajs_to_remove)} trajectories that do not have traj_data.pkl")
+        for traj_name in trajs_to_remove:
+            self.traj_names.remove(traj_name)
+        if "" in self.traj_names:
+            self.traj_names.remove("")
+
+        self.image_size = image_size
+        self.waypoint_spacing = waypoint_spacing
+        self.distance_categories = list(
+            range(min_dist_cat, max_dist_cat + 1, self.waypoint_spacing)
+        )
+        self.min_dist_cat = self.distance_categories[0]
+        self.max_dist_cat = self.distance_categories[-1]
+        self.negative_mining = negative_mining
+        if self.negative_mining:
+            self.distance_categories.append(-1)
+        self.len_traj_pred = len_traj_pred
+        self.learn_angle = learn_angle
+
+        self.min_action_distance = min_action_distance
+        self.max_action_distance = max_action_distance
+
+        self.context_size = context_size
+        assert context_type in {
+            "temporal",
+            "randomized",
+            "randomized_temporal",
+        }, "context_type must be one of temporal, randomized, randomized_temporal"
+        self.context_type = context_type
+        self.end_slack = end_slack
+        self.goals_per_obs = goals_per_obs
+        self.normalize = normalize
+        self.obs_type = obs_type
+        self.goal_type = goal_type
+        self.costmap_filename = kwargs.get("costmap_filename", "navmesh_costmaps.npy")
+        self.costmap_size = tuple(kwargs.get("costmap_size", [16, 16]))
+        if len(self.costmap_size) != 2:
+            raise ValueError(f"costmap_size must be [height, width], got {self.costmap_size}")
+        self.costmap_history_size = kwargs.get("costmap_history_size", None)
+        if self.costmap_history_size is None:
+            uses_costmap_context = (
+                kwargs.get("goal_uses_context", False)
+                or kwargs.get("goal_uses_stacked_context", False)
+            )
+            self.costmap_history_size = self.context_size + 1 if uses_costmap_context else 1
+        self.costmap_history_size = int(self.costmap_history_size)
+        if self.costmap_history_size < 1:
+            raise ValueError(f"costmap_history_size must be >= 1, got {self.costmap_history_size}")
+        self.costmap_normalization = kwargs.get("costmap_normalization", "per_map_minmax")
+        default_precompute_name = (
+            f"{os.path.splitext(self.costmap_filename)[0]}_"
+            f"{self.costmap_size[0]}x{self.costmap_size[1]}_"
+            f"{self.costmap_normalization}.npy"
+        )
+        self.costmap_precompute_filename = kwargs.get(
+            "costmap_precompute_filename",
+            default_precompute_name,
+        ) or default_precompute_name
+        self.use_precomputed_costmaps = kwargs.get("use_precomputed_costmaps", True)
+        self.use_lmdb_cache = kwargs.get("use_lmdb_cache", True)
+        self.image_tensor_cache_size = int(kwargs.get("image_tensor_cache_size", 0))
+        self.image_tensor_cache = OrderedDict()
+        self.costmap_cache = {}
+        self.resized_costmap_cache = {}
+
+        # load data/data_config.yaml
+        with open(
+            os.path.join(os.path.dirname(__file__), "data_config.yaml"), "r"
+        ) as f:
+            all_data_config = yaml.safe_load(f)
+        assert (
+            self.dataset_name in all_data_config
+        ), f"Dataset {self.dataset_name} not found in data_config.yaml"
+        dataset_names = list(all_data_config.keys())
+        dataset_names.sort()
+        # use this index to retrieve the dataset name from the data_config.yaml
+        self.dataset_index = dataset_names.index(self.dataset_name)
+        self.data_config = all_data_config[self.dataset_name]
+        self.images_subfolder=self.data_config.get("images_subfolder", "")
+        self.images_nameformat=self.data_config.get("images_nameformat", "idx.jpg")
+        self.trajectory_cache = {}
+        self._load_index()
+        self._build_caches()
+        
+        if self.learn_angle:
+            self.num_action_params = 3
+        else:
+            self.num_action_params = 2
+
+        if self.goal_type == "image_mask_enc" or self.obs_type == "image_mask_enc":
+            from vint_train import integrate as ig
+            homedir = os.path.expanduser("~")
+            if self.obs_type == "image_mask_enc":
+                dims_segFt = self.kwargs["dims_segFt"]
+            else:
+                dims_segFt = None
+            dims_enc = self.kwargs["dims_segFt"]
+            self.topopaths = ig.TopoPaths(
+                self.kwargs["graphs_path"], self.dataset_name,
+                dims=self.kwargs["dims_segFt"],
+                dims_segFt=dims_segFt,
+                goal_use_pl=self.kwargs["goal_use_pl"],
+                precomputed_filename=self.kwargs["precomputed_filename"],
+                pl_perturb_ratio=self.kwargs["pl_perturb_ratio"],
+                pl_perturb_type=self.kwargs["pl_perturb_type"],
+                mask_crop_ratio=self.kwargs["mask_crop_ratio"],
+                use_mask_grad = self.kwargs["use_mask_grad"],
+            )
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_image_cache"] = None
+        state["image_tensor_cache"] = OrderedDict()
+        return state
+    
+    def __setstate__(self, state):
+        self.__dict__ = state
+        if not hasattr(self, "image_tensor_cache_size"):
+            self.image_tensor_cache_size = 0
+        if not hasattr(self, "image_tensor_cache"):
+            self.image_tensor_cache = OrderedDict()
+        self._build_caches()
+
+    def _build_caches(self, use_tqdm: bool = True):
+        """
+        Build a cache of images for faster loading using LMDB
+        """
+        cache_filename = os.path.join(
+            self.data_split_folder,
+            f"dataset_{self.dataset_name}.lmdb",
+        )
+
+        if not self.use_lmdb_cache:
+            self._image_cache = None
+            return
+
+        """
+        If the cache file doesn't exist, create it by iterating through the dataset and writing each image to the cache
+        """
+        if not os.path.exists(cache_filename):
+            tqdm_iterator = tqdm.tqdm(
+                self.goals_index,
+                disable=not use_tqdm,
+                dynamic_ncols=True,
+                desc=f"Building LMDB cache for {self.dataset_name}"
+            )
+            with lmdb.open(cache_filename, map_size=2**40) as image_cache:
+                with image_cache.begin(write=True) as txn:
+                    for traj_name, time in tqdm_iterator:
+                        image_path = get_data_path(self.data_folder, traj_name, time, self.images_subfolder, self.images_nameformat)
+                        with open(image_path, "rb") as f:
+                            txn.put(image_path.encode(), f.read())
+
+        # Reopen the cache file in read-only mode
+        self._image_cache: lmdb.Environment = lmdb.open(cache_filename, readonly=True)
+
+    def _build_index(self, use_tqdm: bool = False):
+        """
+        Build an index consisting of tuples (trajectory name, time, max goal distance)
+        """
+        samples_index = []
+        goals_index = []
+
+        for traj_name in tqdm.tqdm(self.traj_names, disable=not use_tqdm, dynamic_ncols=True):
+            traj_data = self._get_trajectory(traj_name)
+            traj_len = len(traj_data["position"])
+            if self.goal_type == "navmesh_costmap":
+                traj_len = min(traj_len, self._get_costmap_length(traj_name))
+
+            for goal_time in range(0, traj_len):
+                goals_index.append((traj_name, goal_time))
+
+            begin_time = self.context_size * self.waypoint_spacing
+            end_time = traj_len - self.end_slack - self.len_traj_pred * self.waypoint_spacing
+            for curr_time in range(begin_time, end_time):
+                max_goal_distance = min(self.max_dist_cat * self.waypoint_spacing, traj_len - curr_time - 1)
+                samples_index.append((traj_name, curr_time, max_goal_distance))
+
+        return samples_index, goals_index
+
+    def _sample_goal(self, trajectory_name, curr_time, max_goal_dist):
+        """
+        Sample a goal from the future in the same trajectory.
+        Returns: (trajectory_name, goal_time, goal_is_negative)
+        """
+        goal_offset = np.random.randint(0, max_goal_dist + 1)
+        if goal_offset == 0:
+            trajectory_name, goal_time = self._sample_negative()
+            return trajectory_name, goal_time, True
+        else:
+            goal_time = curr_time + int(goal_offset * self.waypoint_spacing)
+            return trajectory_name, goal_time, False
+
+    def _sample_negative(self):
+        """
+        Sample a goal from a (likely) different trajectory.
+        """
+        return self.goals_index[np.random.randint(0, len(self.goals_index))]
+
+    def _load_index(self) -> None:
+        """
+        Generates a list of tuples of (obs_traj_name, goal_traj_name, obs_time, goal_time) for each observation in the dataset
+        """
+        index_to_data_path = os.path.join(
+            self.data_split_folder,
+            f"dataset_dist_{self.min_dist_cat}_to_{self.max_dist_cat}_context_{self.context_type}_n{self.context_size}_slack_{self.end_slack}.pkl",
+        )
+        try:
+            # load the index_to_data if it already exists (to save time)
+            with open(index_to_data_path, "rb") as f:
+                self.index_to_data, self.goals_index = pickle.load(f)
+        except:
+            # if the index_to_data file doesn't exist, create it
+            self.index_to_data, self.goals_index = self._build_index()
+            with open(index_to_data_path, "wb") as f:
+                pickle.dump((self.index_to_data, self.goals_index), f)
+
+    def _load_image(self, trajectory_name, time):
+        cache_key = (trajectory_name, int(time))
+        if self.image_tensor_cache_size > 0 and cache_key in self.image_tensor_cache:
+            image_tensor = self.image_tensor_cache.pop(cache_key)
+            self.image_tensor_cache[cache_key] = image_tensor
+            return image_tensor
+
+        image_path = get_data_path(self.data_folder, trajectory_name, time, self.images_subfolder, self.images_nameformat)
+
+        try:
+            if self._image_cache is not None:
+                with self._image_cache.begin() as txn:
+                    image_buffer = txn.get(image_path.encode())
+                if image_buffer is not None:
+                    image_bytes = io.BytesIO(bytes(image_buffer))
+                    image_tensor = img_path_to_data(image_bytes, self.image_size)
+                    if self.image_tensor_cache_size > 0:
+                        self.image_tensor_cache[cache_key] = image_tensor
+                        if len(self.image_tensor_cache) > self.image_tensor_cache_size:
+                            self.image_tensor_cache.popitem(last=False)
+                    return image_tensor
+        except (lmdb.Error, OSError, ValueError) as e:
+            print(f"Failed to load cached image {image_path}: {e}; falling back to disk")
+
+        try:
+            image_tensor = img_path_to_data(image_path, self.image_size)
+            if self.image_tensor_cache_size > 0:
+                self.image_tensor_cache[cache_key] = image_tensor
+                if len(self.image_tensor_cache) > self.image_tensor_cache_size:
+                    self.image_tensor_cache.popitem(last=False)
+            return image_tensor
+        except (FileNotFoundError, OSError, ValueError) as e:
+            raise RuntimeError(f"Failed to load image {image_path}") from e
+
+    def _compute_actions(self, traj_data, curr_time, goal_time):
+        start_index = curr_time
+        end_index = curr_time + self.len_traj_pred * self.waypoint_spacing + 1
+        yaw = traj_data["yaw"][start_index:end_index:self.waypoint_spacing]
+        positions = traj_data["position"][start_index:end_index:self.waypoint_spacing]
+        goal_pos = traj_data["position"][min(goal_time, len(traj_data["position"]) - 1)]
+
+        if len(yaw.shape) == 2:
+            yaw = yaw.squeeze(1)
+
+        if yaw.shape != (self.len_traj_pred + 1,):
+            const_len = self.len_traj_pred + 1 - yaw.shape[0]
+            yaw = np.concatenate([yaw, np.repeat(yaw[-1], const_len)])
+            positions = np.concatenate([positions, np.repeat(positions[-1][None], const_len, axis=0)], axis=0)
+
+        assert yaw.shape == (self.len_traj_pred + 1,), f"{yaw.shape} and {(self.len_traj_pred + 1,)} should be equal"
+        assert positions.shape == (self.len_traj_pred + 1, 2), f"{positions.shape} and {(self.len_traj_pred + 1, 2)} should be equal"
+
+        waypoints = to_local_coords(positions, positions[0], yaw[0])
+        goal_pos = to_local_coords(goal_pos, positions[0], yaw[0])
+
+        assert waypoints.shape == (self.len_traj_pred + 1, 2), f"{waypoints.shape} and {(self.len_traj_pred + 1, 2)} should be equal"
+
+        if self.learn_angle:
+            yaw = yaw[1:] - yaw[0]
+            actions = np.concatenate([waypoints[1:], yaw[:, None]], axis=-1)
+        else:
+            actions = waypoints[1:]
+        
+        if self.normalize:
+            actions[:, :2] /= self.data_config["metric_waypoint_spacing"] * self.waypoint_spacing
+            goal_pos /= self.data_config["metric_waypoint_spacing"] * self.waypoint_spacing
+
+        assert actions.shape == (self.len_traj_pred, self.num_action_params), f"{actions.shape} and {(self.len_traj_pred, self.num_action_params)} should be equal"
+
+        return actions, goal_pos
+    
+    def _get_trajectory(self, trajectory_name):
+        if trajectory_name in self.trajectory_cache:
+            return self.trajectory_cache[trajectory_name]
+        else:
+            with open(os.path.join(self.data_folder, trajectory_name, "traj_data.pkl"), "rb") as f:
+                traj_data = pickle.load(f)
+            traj_data = {k:v.astype(float) for k, v in traj_data.items()}
+            self.trajectory_cache[trajectory_name] = traj_data
+            return traj_data
+
+    def _get_costmaps(self, trajectory_name):
+        if trajectory_name in self.costmap_cache:
+            return self.costmap_cache[trajectory_name]
+
+        costmap_path = os.path.join(self.data_folder, trajectory_name, self.costmap_filename)
+        if not os.path.exists(costmap_path):
+            raise FileNotFoundError(f"Costmap file not found for {trajectory_name}: {costmap_path}")
+
+        costmaps = np.load(costmap_path, mmap_mode="r")
+        if costmaps.ndim != 3:
+            raise ValueError(f"Expected {self.costmap_filename} to have shape [T,H,W], got {costmaps.shape}")
+        self.costmap_cache[trajectory_name] = costmaps
+        return costmaps
+
+    def _get_resized_costmaps(self, trajectory_name):
+        if trajectory_name in self.resized_costmap_cache:
+            return self.resized_costmap_cache[trajectory_name]
+
+        precomputed_path = os.path.join(
+            self.data_folder,
+            trajectory_name,
+            self.costmap_precompute_filename,
+        )
+        if self.use_precomputed_costmaps and os.path.exists(precomputed_path):
+            # These sidecars are tiny 16x16 arrays, so keep them in RAM instead
+            # of holding one open memmap file descriptor per trajectory/worker.
+            resized_costmaps = np.load(precomputed_path)
+            expected_shape = self.costmap_size
+            if resized_costmaps.ndim != 3 or tuple(resized_costmaps.shape[1:]) != expected_shape:
+                raise ValueError(
+                    f"Expected {precomputed_path} to have shape [T,{expected_shape[0]},{expected_shape[1]}], "
+                    f"got {resized_costmaps.shape}"
+                )
+            self.resized_costmap_cache[trajectory_name] = resized_costmaps
+            return resized_costmaps
+
+        return None
+
+    def _get_costmap_length(self, trajectory_name):
+        precomputed_path = os.path.join(
+            self.data_folder,
+            trajectory_name,
+            self.costmap_precompute_filename,
+        )
+        if self.use_precomputed_costmaps and os.path.exists(precomputed_path):
+            costmaps = np.load(precomputed_path, mmap_mode="r")
+            expected_shape = self.costmap_size
+            if costmaps.ndim != 3 or tuple(costmaps.shape[1:]) != expected_shape:
+                raise ValueError(
+                    f"Expected {precomputed_path} to have shape [T,{expected_shape[0]},{expected_shape[1]}], "
+                    f"got {costmaps.shape}"
+                )
+            return int(costmaps.shape[0])
+
+        costmaps = self._get_costmaps(trajectory_name)
+        return int(costmaps.shape[0])
+
+    def _normalize_costmap(self, costmap):
+        costmap = np.asarray(costmap, dtype=np.float32)
+        finite_mask = np.isfinite(costmap)
+        if not finite_mask.any():
+            return np.zeros_like(costmap, dtype=np.float32)
+
+        finite_values = costmap[finite_mask]
+        fill_value = float(finite_values.max())
+        costmap = np.where(finite_mask, costmap, fill_value).astype(np.float32)
+
+        if self.costmap_normalization == "none":
+            return costmap
+        if self.costmap_normalization != "per_map_minmax":
+            raise ValueError(f"Unknown costmap_normalization: {self.costmap_normalization}")
+
+        min_value = float(costmap.min())
+        max_value = float(costmap.max())
+        denom = max(max_value - min_value, 1e-6)
+        return (costmap - min_value) / denom
+
+    def _load_costmap(self, trajectory_name, time):
+        resized_costmaps = self._get_resized_costmaps(trajectory_name)
+        if resized_costmaps is not None:
+            time = int(np.clip(time, 0, resized_costmaps.shape[0] - 1))
+            costmap = np.array(resized_costmaps[time], dtype=np.float32, copy=True)
+            return torch.from_numpy(costmap)[None]
+
+        costmaps = self._get_costmaps(trajectory_name)
+        time = int(np.clip(time, 0, costmaps.shape[0] - 1))
+        costmap = self._normalize_costmap(costmaps[time])
+        costmap_tensor = torch.as_tensor(costmap, dtype=torch.float32)[None, None]
+        costmap_tensor = F.interpolate(
+            costmap_tensor,
+            size=self.costmap_size,
+            mode="area",
+        )
+        return costmap_tensor[0]
+
+    def _load_costmap_history(self, trajectory_name, time):
+        times = [
+            max(0, int(time) - offset * self.waypoint_spacing)
+            for offset in reversed(range(self.costmap_history_size))
+        ]
+        return torch.cat(
+            [self._load_costmap(trajectory_name, history_time) for history_time in times],
+            dim=0,
+        )
+
+    def __len__(self) -> int:
+        return len(self.index_to_data)
+
+    def __getitem__(self, i: int) -> Tuple[torch.Tensor]:
+        """
+        Args:
+            i (int): index to ith datapoint
+        Returns:
+            Tuple of tensors containing the context, observation, goal, transformed context, transformed observation, transformed goal, distance label, and action label
+                obs_image (torch.Tensor): tensor of shape [3, H, W] containing the image of the robot's observation
+                goal_image (torch.Tensor): tensor of shape [3, H, W] containing the subgoal image 
+                dist_label (torch.Tensor): tensor of shape (1,) containing the distance labels from the observation to the goal
+                action_label (torch.Tensor): tensor of shape (5, 2) or (5, 4) (if training with angle) containing the action labels from the observation to the goal
+                which_dataset (torch.Tensor): index of the datapoint in the dataset [for identifying the dataset for visualization when using multiple datasets]
+        """
+        f_curr, curr_time, max_goal_dist = self.index_to_data[i]
+        curr_traj_data = self._get_trajectory(f_curr)
+        curr_traj_len = len(curr_traj_data["position"])
+
+        if self.goal_type == "navmesh_costmap":
+            f_goal = f_curr
+            goal_time = curr_traj_len - 1
+            goal_is_negative = False
+        else:
+            f_goal, goal_time, goal_is_negative = self._sample_goal(f_curr, curr_time, max_goal_dist)
+
+        # Load images
+        context = []
+        if self.context_type == "temporal":
+            # sample the last self.context_size times from interval [0, curr_time)
+            context_times = list(
+                range(
+                    curr_time + -self.context_size * self.waypoint_spacing,
+                    curr_time + 1,
+                    self.waypoint_spacing,
+                )
+            )
+            context = [(f_curr, t) for t in context_times]
+        else:
+            raise ValueError(f"Invalid context type {self.context_type}")
+
+        if self.obs_type == "image_mask_enc":
+            obs_img, obs_vis = [], []
+            for f, t in context:
+                oimg, ovis = self.topopaths.get_topo_path(f,t,getFt=True)
+                obs_img.append(oimg)
+                obs_vis.append(ovis)
+            obs_image = torch.as_tensor(np.concatenate([obs_vis[-1],np.concatenate(obs_img,0)],0),dtype=torch.float32)
+        elif self.obs_type == "image":
+            obs_image = torch.cat([self._load_image(f, t) for f, t in context])
+        elif self.obs_type == "disabled":
+            obs_image = self._load_image(f_curr, curr_time)
+        else:
+            raise ValueError(f"Invalid observation type {self.obs_type}")
+
+        # Load goal image
+        if self.goal_type == "image_mask_enc":
+            goal_use_pl = self.kwargs["goal_use_pl"]
+            if self.kwargs["goal_uses_context"]:
+                goal_context = context
+            else:
+                goal_context = [(f_curr, curr_time)]
+            goal_image_list, goal_vis_list = [], []
+            for f, t in goal_context:
+                if goal_use_pl == 1:
+                    goal_image, goal_vis = self.topopaths.get_topo_path(f, t)
+                elif goal_use_pl == 2:
+                    goal_image, goal_vis = self.topopaths.get_topo_path(f, t, goalIdx=goal_time)
+                else:
+                    raise NotImplementedError # TODO: handle context
+                    goal_image, goal_vis = self.topopaths.get_topo_path(f_goal, goal_time, getFt=True)
+                goal_image_list.append(goal_image)
+                goal_vis_list.append(goal_vis)
+            goal_image = np.concatenate(goal_image_list, 0)
+            goal_image = np.concatenate([goal_vis_list[-1], goal_image], axis=0)
+            if goal_image.dtype == object:
+                # print("Error: goal_image is object")
+                goal_image = np.concatenate([np.zeros((3,60,80)), np.ones((self.kwargs["dims_segFt"],60,80))], axis=0)
+        elif self.goal_type == "image":
+            goal_image = self._load_image(f_goal, goal_time)
+        elif self.goal_type == "navmesh_costmap":
+            goal_image = self._load_costmap_history(f_curr, curr_time)
+        elif self.goal_type == "disabled":
+            goal_image = torch.zeros(obs_image.shape[1:], dtype=torch.float32)
+
+        # Load other trajectory data
+        assert curr_time < curr_traj_len, f"{curr_time} and {curr_traj_len}"
+
+        goal_traj_data = self._get_trajectory(f_goal)
+        goal_traj_len = len(goal_traj_data["position"])
+        assert goal_time < goal_traj_len, f"{goal_time} an {goal_traj_len}"
+
+        # Compute actions
+        actions, goal_pos = self._compute_actions(curr_traj_data, curr_time, goal_time)
+        
+        # Compute distances
+        if goal_is_negative:
+            distance = self.max_dist_cat
+        else:
+            distance = (goal_time - curr_time) // self.waypoint_spacing
+            assert (goal_time - curr_time) % self.waypoint_spacing == 0, f"{goal_time} and {curr_time} should be separated by an integer multiple of {self.waypoint_spacing}"
+        
+        actions_torch = torch.as_tensor(actions, dtype=torch.float32)
+        if self.learn_angle:
+            actions_torch = calculate_sin_cos(actions_torch)
+        
+        if self.goal_type == "navmesh_costmap":
+            action_mask = not goal_is_negative
+        else:
+            action_mask = (
+                (distance < self.max_action_distance) and
+                (distance > self.min_action_distance) and
+                (not goal_is_negative)
+            )
+
+        return (
+            torch.as_tensor(obs_image, dtype=torch.float32),
+            torch.as_tensor(goal_image, dtype=torch.float32),
+            actions_torch,
+            torch.as_tensor(distance, dtype=torch.int64),
+            torch.as_tensor(goal_pos, dtype=torch.float32),
+            torch.as_tensor(self.dataset_index, dtype=torch.int64),
+            torch.as_tensor(action_mask, dtype=torch.float32),
+        )

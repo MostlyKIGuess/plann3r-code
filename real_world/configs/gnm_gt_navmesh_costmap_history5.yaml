@@ -1,0 +1,30 @@
+# Default GNM controller config of real_world/plann3r_realworld_server.py
+# (docs/real-world.md). It expects a GNM trained on simulator navmesh costmaps
+# with 5 stacked costmaps, which is not one of the two released controllers.
+# Set PLANN3R_REAL_CONTROLLER_RUN to the folder holding its latest.pth. Keys
+# are explained in configs/controller/predicted_costmap.yaml.
+load_run: $PLANN3R_REAL_CONTROLLER_RUN
+
+goal_type: "navmesh_costmap"
+goal_use_pl: 0
+dims_segFt: 1
+goal_uses_context: False
+goal_uses_stacked_context: False
+use_mask_grad: False
+costmap_size: [16, 16]
+costmap_channels: 1
+costmap_history_size: 5                 # this controller stacks the last 5 costmaps
+costmap_normalization: "per_map_minmax"
+
+obs_type: "image"
+model_type: gnm
+obs_encoding_size: 1024
+goal_encoding_size: 1024
+context_size: 5
+image_size: [85, 64]
+
+len_traj_pred: 5
+learn_angle: True
+waypoint_index: -1
+use_vel_filter: False
+vel_filter_window: 1

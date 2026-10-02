@@ -1,0 +1,119 @@
+# @package _global_
+defaults:
+  - _self_
+
+# Settings for libs/mapper/create_vggt_prop_map.py.
+
+# Map images are resized to this before VGGTNav preprocessing.
+image:
+  width: 320
+  height: 240
+
+# VGGTNav / Plann3r model settings used by propagation mapping.
+vggtnav:
+  checkpoint_path: "${oc.env:PLANN3R_ROOT}/models/planner/checkpoint_best.pt"
+  device: "cuda"
+  img_size: 224
+  patch_size: 14
+  init_costmap_from_depth: false
+  costmap_activation: "gelu"
+  costmap_head_type: "mlp"
+  costmap_mlp_ratio: 4.0
+  costmap_mlp_drop: 0.0
+  costmap_mlp_layer_idx: -1
+  enable_point_aux: false
+  train_point_head: false
+  upsample_size: 60
+
+# Offline Plann3r/VGGTNav propagation settings. The mapper starts from the
+# goal frame and propagates dense geodesic costs through overlapping windows.
+prop_map:
+  window_size: 9
+  stride: 8
+
+  # Per-window inference strategy. The default, multi_query, is the setting
+  # every released and reported propagation map was built with.
+  #   multi_query   - one aggregator pass per window, decode every frame's tokens
+  #                   through the costmap head. ~window_size less compute, but only the
+  #                   slot-0 frame is in-distribution: slot 0 gets a distinct
+  #                   camera/register token and the head was trained on slot-0 tokens
+  #                   only. Measured on floor_l1: non-slot-0 frames shift by 4-8% of
+  #                   costmap range and their argmin patch moves.
+  #   batched_exact - one model call per frame, batched along B. Set
+  #                   multi_query=false to use it, or set both false for
+  #                   unbatched per-frame calls. Not used for any reported number.
+  # Mutually exclusive.
+  multi_query: true
+  batched_exact: false
+  batch_chunk: 3
+
+  normalize_costmap: false
+  truncate_to_goal: true
+  cache_images: true
+  overwrite: false
+  save_metadata: true
+  save_filename: "vggt_propagation_costs.npy"
+  metadata_filename: "vggt_propagation_costs_meta.json"
+
+# Scene settings (unified for single and multi)
+scenes:
+  # Parent directory containing scene subdirectories
+
+  # base_dir: ${oc.env:PLANN3R_ROOT}/training/planner/source_scenes
+
+  ##############################
+  # BENCHMARK PATHS
+  ##############################
+  # IMITATE, ALTGOAL, REVERSE
+  base_dir: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/hm3d_navigation/hm3d_iin_val_320x240
+
+  # SHORTCUT
+  # base_dir: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/object-rel-nav/maps_via_alt_goal
+  ##############################
+  # Toggle between single and multi-scene mode
+  multi_scene: false
+
+  # Base output directory (optional). If set, outputs go to base_out_dir/scene_name/
+  # If null, outputs go to the scene directory itself
+
+  # base_out_dir: ${oc.env:PLANN3R_ROOT}/training/planner/vggtnav
+
+  ##############################
+  # BENCHMARK PATHS
+  ##############################
+  # IMITATE
+  base_out_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_04ed325_commit_sg_habitat_vggt_costmaps"
+
+  # SHORTCUT
+  # base_out_dir: "${oc.env:PLANN3R_ROOT}/evaluation/datasets/object-rel-nav/maps_via_alt_goal"
+
+  # ALTGOAL
+  # base_out_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_alt_goal_v2_correct_vggt_multiview_w1"
+
+  # REVERSE
+  # base_out_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_original_reverse_vggt_multiview_w1"
+  #############################
+
+  # Single scene mode: scene name (used when multi_scene=false)
+  scene_name: "1W61QJVDBqe"
+
+  # Multi-scene mode options:
+  scene_list_file: null
+  start_idx: 0            # Start index
+  end_idx: -1             # End index (-1 = all)
+  step: 1                 # Process every Nth scene
+
+# Goal frame and pixel the costmaps are propagated from
+goal:
+  # Mode: "config" or "episode"
+  #   config  - Goal from config (image_idx, pixel_x, pixel_y)
+  #   episode - Infer goal from episode folder (semantic mask + centroid)
+  mode: "episode"
+
+  # For mode="config": manual goal specification
+  image_idx: 109
+  pixel_x: 160
+  pixel_y: 120
+
+  # For mode="episode": task type affects goal parsing
+  task_type: "original"  # "original" (Imitate), "original_reverse" (Reverse), "via_alt_goal" (Shortcut). Alt goal uses goal.mode=config

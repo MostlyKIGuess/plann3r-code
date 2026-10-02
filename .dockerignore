@@ -1,0 +1,12 @@
+# The robot image (real_world/Dockerfile) needs only the code. Keep recorded
+# maps, environments and outputs out of the build context.
+.git
+.pixi
+.dependencies
+data
+runs
+paper
+blender
+docs
+**/__pycache__
+*.egg-info

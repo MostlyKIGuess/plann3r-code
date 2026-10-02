@@ -1,0 +1,4 @@
+# Controller entry for every reported row. `name` labels result folders, and
+# `config_file` holds the GNM checkpoint and its model settings.
+name: vggt_nav
+config_file: configs/controller/predicted_costmap.yaml

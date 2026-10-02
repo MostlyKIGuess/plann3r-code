@@ -1,0 +1,101 @@
+defaults:
+  - sim: habitat_default
+  - controller: vggt_nav_baseline
+  - localizer: topological
+  - experiment: vggt_nav_baseline
+  - visualization: visualization  # Visualization configuration
+  - _self_
+
+# ============================================
+# Path Configuration
+# ============================================
+# For single episode mode (multi_episode: false):
+episode_path: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/hm3d_navigation/hm3d_iin_val_320x240/mL8ThkuaVTM_0000000_bed_26_
+
+# For multi-episode mode (multi_episode: true):
+##############################
+# BENCHMARK PATHS
+##############################
+# IMITATE, ALTGOAL, REVERSE
+episodes_dir: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/hm3d_navigation/hm3d_iin_val_320x240
+
+# SHORTCUT
+# episodes_dir: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/object-rel-nav/maps_via_alt_goal
+##############################
+
+# HM3D scenes root path (for loading GLB files)
+hm3d_root_path: ${oc.env:PLANN3R_ROOT}/evaluation/datasets/hm3d_navigation/hm3d_v0.2/val
+
+# Costmap configuration:
+# Path pattern: {costmap_base_dir}/{episode_name}/{costmap_filename}
+# If costmap_base_dir is null, uses episode_path instead
+
+##############################
+# BENCHMARK PATHS
+##############################
+# IMITATE
+costmap_base_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_04ed325_commit_sg_habitat_vggt_costmaps"
+
+# SHORTCUT
+# costmap_base_dir: "${oc.env:PLANN3R_ROOT}/evaluation/datasets/object-rel-nav/maps_via_alt_goal"
+
+# ALTGOAL
+# costmap_base_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_alt_goal_v2_correct_vggt_multiview_w1"
+
+# REVERSE
+# costmap_base_dir: "${oc.env:PLANN3R_ROOT}/evaluation/maps/hm3d_val_mapping_original_reverse_vggt_multiview_w1"
+##############################
+
+# Plann3r propagation map costmaps (the paper method). The names below are the
+# Imitate files; evaluate.sh sets the per-task names.
+costmap_filename: "vggt_propagation_costs.npy"
+
+# JSON sidecar of the costmaps, holding the goal frame. Sidecar names are not
+# uniform across tasks, so evaluate.sh sets it per task. null means
+# <costmap stem>_meta.json.
+costmap_metadata_filename: "vggt_propagation_costs_meta.json"
+
+results_dirpath: "${oc.env:PLANN3R_ROOT}/runs/nav_logs"
+
+# ============================================
+# Episode Selection
+# ============================================
+# Set to true to process multiple episodes from episodes_dir
+multi_episode: true
+
+# Episode range (only used when multi_episode: true)
+# -1 means no limit (start from 0 or go to end)
+episode_start_idx: 0
+episode_end_idx: -1
+
+# Optional: list of specific episode names to run (takes priority over start/end_idx)
+# If non-empty, only these episodes will be processed
+# Example: ["episode_001", "episode_005", "episode_010"]
+episode_list: []
+
+# Optional: txt file with episode names (1 per line) - takes priority over episode_list
+# episode_list_file: null
+##############################
+# BENCHMARK PATHS
+##############################
+# IMITATE, ALTGOAL, SHORTCUT
+episode_list_file: null
+
+# REVERSE
+# episode_list_file: "${oc.env:PLANN3R_ROOT}/plann3r-code/episode_lists/reverse_with_reverse_goal_31.txt"
+##############################
+
+# Optional: list of episode names to skip
+episode_blacklist: []
+
+# ============================================
+# Core Settings
+# ============================================
+# The only supported goal source. It also names the result folders.
+goal_source: topological_pixelwise
+device: 'cuda'
+# Seed for Python, NumPy and Torch; see seed_everything in run_nav.py.
+seed: 42
+
+# Paper Plann3r inference is image-only. GT depth is reserved for oracle-costmap runs.
+pts3d_source: "none"

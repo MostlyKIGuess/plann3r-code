@@ -1,0 +1,88 @@
+# @package _global_
+# Default experiment configuration for navigation tasks
+
+exp_name: "vggt_nav_paper"
+
+# Task configuration
+task_type: "original"  # "original" (Imitate, Reverse with reverse=true), "alt_goal_v2" (Alt goal), "via_alt_goal" (Shortcut)
+reverse: false         # If true, navigate to start position (reverse navigation) [true for REVERSE task]
+
+# Start state configuration
+# Modes: "random" - sample random navigable points
+#        "trajectory" - select from recorded trajectory at target distance from goal
+#        "fixed_idx" - use specific trajectory index (set start_idx)
+start_state_mode: "trajectory"
+start_idx: -1                    # Trajectory index (only for fixed_idx mode)
+max_start_distance: "hard"       # "easy" (3m), "hard" (5m), "full", or numeric value
+max_steps: 300
+
+# Goal/Success configuration
+# Success radius in meters. Alt goal widens it by (initial distance - 5 m) when
+# the start is farther than 5 m (docs/method.md, alt-goal distance rule).
+goal_distance_threshold: 1.0
+# Goal position for Imitate, Reverse and Shortcut: "trajectory" takes the agent
+# position at the goal frame. Alt goal always uses the annotated semantic
+# object (task_setup.py _set_alt_goal) and accepts "trajectory" or
+# "semantic_instance", which evaluate.sh records. Other values raise an error.
+goal_position_method: "trajectory"
+
+# Anchor selection: "topomap" picks the submap anchor from the Plann3r
+# propagation map costmaps, "navmesh_min" from precomputed simulator NavMesh
+# costs (privileged, off).
+vggtnav:
+  enabled: true
+  checkpoint_path: "${oc.env:PLANN3R_ROOT}/models/planner/checkpoint_best.pt"
+  # topomap is the reported setting. navmesh_min reads simulator navmesh
+  # costs, which are privileged information.
+  anchor_source: "topomap"
+  # topomap_anchor_mode: "min_pixel" (global min) or "min_median_costmap" (lowest median costmap, then min pixel)
+  topomap_anchor_mode: "min_median_costmap"
+  # navmesh_min files. Empty means navmesh_costmaps.npy or navmesh_min_pixels.npy
+  # in the episode's costmap directory.
+  navmesh_min_pixels_path: ""
+  navmesh_costmaps_path: ""
+  # Tie-breaker for equal navmesh_min costs: "max_img_idx" or "min_img_idx"
+  navmesh_min_tiebreaker: "max_img_idx"
+  img_size: 224
+  patch_size: 14
+  upsample_size: 60
+  init_costmap_from_depth: false
+  costmap_activation: "gelu"
+  # The MLP costmap head is the only supported head. Its costmap drives the
+  # GNM learnt controller.
+  costmap_head_type: "mlp"
+  costmap_mlp_ratio: 4.0
+  costmap_mlp_drop: 0.0
+  costmap_mlp_layer_idx: -1
+  enable_point_aux: false
+  train_point_head: false
+
+# Direct oracle costmaps. When enabled, this bypasses Plann3r and feeds GT
+# navmesh distance-to-goal costmaps, built online from simulator depth, to the
+# controller. Needs pts3d_source=gt_depth.
+gt_navmesh_costmap:
+  enabled: false
+  source: "online_navmesh"  # the only wired source
+  fill_holes: true
+  stride: 1
+
+# Optional CARE-style collision avoidance. Disabled by default so existing
+# results remain comparable.
+collision_avoidance:
+  enabled: false
+  method: "care"
+  override_velocity: true
+  care:
+    theta_clip: 0.7853981633974483   # pi / 4
+    theta_thres: 0.5235987755982988  # pi / 6
+    tau_z: 0.5
+    depth_offset: 0.0
+    vertical_offset: -0.05
+    sample_step: 10
+    min_obstacle_dist: 0.05
+    v_forward: 0.15
+    v_max: 0.2
+    omega_max: 0.8
+    cam_x_offset: 0.0
+    cam_y_offset: 0.0
+    cam_height: ${sim.sensor_height}

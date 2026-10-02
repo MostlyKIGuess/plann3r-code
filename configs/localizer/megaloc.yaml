@@ -1,0 +1,20 @@
+defaults:
+  - topological
+  - _self_
+
+retrieval: megaloc
+use_gt_localization: false
+retrieval_top_k: 8
+
+# Official MegaLoc source and weights from the release bundle.
+megaloc_model_source: ${oc.env:PLANN3R_ROOT}/models/megaloc/source
+megaloc_weights_path: ${oc.env:PLANN3R_ROOT}/models/megaloc/model.safetensors
+megaloc_cache_root: ${oc.env:PLANN3R_ROOT}/cache/megaloc
+megaloc_batch_size: 16
+
+# On alt-goal, MegaLoc searches only map frames up to the goal frame, as oracle
+# localization does. This is fixed behavior, not an option.
+
+# Once the goal frame is the top-1 MegaLoc match, keep the submap on the
+# goal-frame window for the rest of the episode.
+megaloc_goal_lock: false

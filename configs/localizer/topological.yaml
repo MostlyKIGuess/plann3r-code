@@ -1,0 +1,13 @@
+name: topological
+retrieval: oracle
+use_gt_localization: true
+
+# Ground-truth pose localization rule.
+#   legacy   : rank map frames by position only. Reported results use this.
+#   odometry : rank map frames by position plus rotation angle. On alt-goal it
+#              also drops map frames after the goal frame.
+oracle_mode: legacy
+
+# Pose-localized map window passed to Plann3r.
+loc_radius: 4
+subsample_ref: 1

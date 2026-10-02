@@ -1,0 +1,65 @@
+/* Colors and fonts of the project page (plann3r.github.io, static/css/index.css). */
+@import url("https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans&display=swap");
+
+:root {
+  --plann3r-blue: #3b6fd4;
+  --plann3r-blue-dark: #2451a6;
+  --plann3r-ink: #1f2733;
+  --plann3r-page: #eef0f3;
+  --plann3r-line: #e7ebf1;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--plann3r-blue-dark);
+  --md-primary-fg-color--light: var(--plann3r-blue);
+  --md-primary-fg-color--dark: var(--plann3r-blue-dark);
+  --md-accent-fg-color: var(--plann3r-blue);
+  --md-default-bg-color: var(--plann3r-page);
+  --md-default-fg-color: var(--plann3r-ink);
+  --md-typeset-a-color: var(--plann3r-blue-dark);
+  --md-code-bg-color: #ffffff;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--plann3r-blue-dark);
+  --md-accent-fg-color: #5aa0e0;
+  --md-typeset-a-color: #7fb1ee;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__title {
+  font-family: "Google Sans", "Noto Sans", sans-serif;
+}
+
+.md-typeset h1 {
+  font-weight: 600;
+  color: var(--plann3r-ink);
+}
+
+[data-md-color-scheme="slate"] .md-typeset h1 {
+  color: inherit;
+}
+
+/* Tables and code blocks as white cards, like the project page sections. */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--plann3r-line);
+  border-radius: 6px;
+  font-size: 0.72rem;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: #f5f7fa;
+  color: var(--plann3r-ink);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background-color: transparent;
+  color: inherit;
+}
+
+.md-typeset pre > code {
+  border: 1px solid var(--plann3r-line);
+  border-radius: 6px;
+}

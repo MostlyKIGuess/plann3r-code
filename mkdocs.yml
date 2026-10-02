@@ -1,0 +1,71 @@
+site_name: Plann3r
+site_description: 'Code for "Plann3r: Predicting Planning Costs Grounded in 3D" (CoRL 2026)'
+site_url: https://mostlykiguess.github.io/plann3r-code/
+repo_url: https://github.com/MostlyKIGuess/plann3r-code
+repo_name: MostlyKIGuess/plann3r-code
+edit_uri: ""
+docs_dir: docs
+
+# docs/index.md, docs/real-world-code.md and docs/history.md are generated from
+# README.md, real_world/README.md and history/README.md by
+# .github/scripts/prepare_docs_site.sh before every build.
+nav:
+  - Home: index.md
+  - Setup: setup.md
+  - Evaluation: evaluation.md
+  - Method: method.md
+  - Training: training.md
+  - Real world: real-world.md
+  - Real-world code: real-world-code.md
+  - History: history.md
+
+# Internal notes are excluded from git, and also from local builds.
+exclude_docs: |
+  internal-*.md
+  internal-results-csv/
+  paper-results.md
+  real-world-internal.md
+  discussion-*.md
+
+theme:
+  name: material
+  font:
+    text: Noto Sans
+    code: Roboto Mono
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: material/web
+      link: https://plann3r.github.io/
+      name: Project page
+    - icon: material/github
+      link: https://github.com/MostlyKIGuess/plann3r-code
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
